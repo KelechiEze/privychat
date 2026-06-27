@@ -1,0 +1,6 @@
+{
+  "name": "Chat Dashboard",
+  "description": "An elegant, interactive group chat and file-sharing dashboard with a warm, minimalist 200% accurate layout representation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

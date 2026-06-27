@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title> Privy Chat - Private Messaging</title>
+    
+    <!-- SVG Favicon for browser tab -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='grad' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%2300c5bc;stop-opacity:1' /%3E%3Cstop offset='100%25' style='stop-color:%234ade80;stop-opacity:1' /%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='100' height='100' rx='20' fill='url(%23grad)'/%3E%3Cpath d='M30 35h40v25c0 5-4 9-9 9H40l-10 8v-8c-5 0-9-4-9-9V35c0-5 4-9 9-9z' fill='white' opacity='0.9'/%3E%3Cpath d='M45 45h20M45 55h15' stroke='white' stroke-width='3' stroke-linecap='round' fill='none' opacity='0.8'/%3E%3C/svg%3E" />
+    
+    <!-- Alternative: Multiple sizes for better compatibility -->
+    <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAACXBIWXMAAAsTAAALEwEAmpwYAAAB4ElEQVR4nO2WTUhUURTHf28qpkQfOiuRzaIydNJKCNq0qkWrotAmCNpEi35IKSgoMBcWLVqE0YdBtAiKDIw+FpZmoigVMSqCBoN+mDRjPoeZ5owzY2rQf/dy3733nP97PueccyVJkv5fpQgBICGtRFIUK1AGCEdSYwAE2wEQIu06AKWAAHKtA5AFoBUhAKy1DUBzAKwD0AXohno1DkCYclcBvQC8D4DuU6/KAfDmKZuzAOhGvWoNQA8A13CvmgKgh3JXANAauVeNAShQbgSgKXKvGgUgdI2yLQD0Ru5VYwBqKdcCwHd/RtUDQFmZ3wFApQegPqvf8S26pcoT8DoAcBmAWQCs1xR5AEI3B3XzGc6lH67CpyISLh6ApPQfCz30DviU9h6+5MBbbF4EoPcRjOhLw5+pA9ePzIfnHt5c9h2Is+0X6oTAz2kP3gy5/sVw3buEYkM41n0mYgH1Z+1vAaqKMj/TzlY84IL3L7wOrcP4tvcKjFNvpLSCgMB9+XotgeAgB9GdCAUC0i4DkG01U1YDFMcAqC23EoAxAKnKPEwBUEe9P2MA1CpzMQBAQzQGehY0KUsA/jff+koAfkhvG8UASJIUO3/iW92W7MXRV1YAAAAASUVORK5CYII=" />
+    
+    <meta name="description" content="Private and secure messaging for you and your team" />
+    <meta name="theme-color" content="#00c5bc" />
+    
+    <style>
+      /* Optional: Add a smooth loading transition */
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+          'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      }
+      
+      /* Optional: Animated gradient background for loading state */
+      @keyframes gradientShift {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+      }
+      
+      #root {
+        width: 100%;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
