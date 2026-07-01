@@ -1,12 +1,21 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Paperclip, Smile, Send, Trash2, ShieldAlert, Upload, X, Image as ImageIcon, 
   Pin, Star, Archive, VolumeX, Volume2, Check, CheckCheck, 
-  Mic, MicOff, Play, Pause, StopCircle, Clock 
+  Mic, MicOff, Play, Pause, StopCircle, Clock, Loader2, ChevronDown
 } from 'lucide-react';
-import { Chat, Message, Participant } from '../types';
+import { Chat, Message } from '../types';
 import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
-import { setTypingStatus, listenToTypingStatus, getCurrentUser } from '../services/chatService';
+import { 
+  setTypingStatus, 
+  listenToTypingStatus, 
+  getCurrentUser, 
+  listenToMessagesPaginated,
+  loadMoreMessages,
+  markAllMessagesAsRead,
+  markMessageAsRead,
+  sendMessage
+} from '../services/chatService';
 
 interface GroupChatWorkspaceProps {
   chat: Chat;
@@ -34,7 +43,12 @@ export default function GroupChatWorkspace({
 }: GroupChatWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<'messages' | 'participants'>('messages');
   const [inputText, setInputText] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   
   const emojiPickerRef = useRef<HTMLDivElement>(null);
@@ -57,12 +71,12 @@ export default function GroupChatWorkspace({
   const [playbackProgress, setPlaybackProgress] = useState(0);
   const [showRecordingInterface, setShowRecordingInterface] = useState(false);
   
-  // Voice Message Playback States (for sent/received messages)
+  // Voice Message Playback States
   const [playingVoiceMessageId, setPlayingVoiceMessageId] = useState<string | null>(null);
   const [voiceMessageProgress, setVoiceMessageProgress] = useState<{ [key: string]: number }>({});
   const [voiceMessageDuration, setVoiceMessageDuration] = useState<{ [key: string]: number }>({});
   
-  // Refs for recording
+  // Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -72,42 +86,48 @@ export default function GroupChatWorkspace({
   const [isOtherTyping, setIsOtherTyping] = useState(false);
   const [typingUserId, setTypingUserId] = useState('');
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Message listener cleanup
+  const messageListenerRef = useRef<(() => void) | null>(null);
 
-  // Close popovers when clicking outside
+  // Load messages with real-time listener
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node;
-      if (showEmojiPicker && emojiPickerRef.current && !emojiPickerRef.current.contains(target)) {
-        const trigger = document.querySelector('[title="Add Emoji"]');
-        if (!trigger || !trigger.contains(target)) {
-          setShowEmojiPicker(false);
-        }
-      }
-      if (showAttachmentMenu && attachmentMenuRef.current && !attachmentMenuRef.current.contains(target)) {
-        const triggerAtt = document.querySelector('[title="Attach Picture from Device"]');
-        const triggerPresets = document.querySelector('[title="More photo presets & URLs"]');
-        if (
-          (!triggerAtt || !triggerAtt.contains(target)) &&
-          (!triggerPresets || !triggerPresets.contains(target))
-        ) {
-          setShowAttachmentMenu(false);
-        }
-      }
+    if (!chat?.id) return;
+    
+    setIsLoadingMessages(true);
+    
+    // Clean up previous listener
+    if (messageListenerRef.current) {
+      messageListenerRef.current();
     }
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('touchstart', handleClickOutside as unknown as EventListener);
+    
+    // Set up real-time message listener
+    const unsubscribe = listenToMessagesPaginated(chat.id, (newMessages) => {
+      setMessages(newMessages);
+      setIsLoadingMessages(false);
+      setHasMoreMessages(newMessages.length >= 30); // If we got full page, there might be more
+    });
+    
+    messageListenerRef.current = unsubscribe;
+    
+    // Mark messages as read when entering chat
+    markAllMessagesAsRead(chat.id);
+    
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('touchstart', handleClickOutside as unknown as EventListener);
+      if (messageListenerRef.current) {
+        messageListenerRef.current();
+      }
     };
-  }, [showEmojiPicker, showAttachmentMenu]);
+  }, [chat?.id]);
 
-  // Scroll to bottom when messages change
+  // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chat.messages, activeTab, pendingImage]);
+    if (messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages.length]);
 
-  // Listen to typing status from other user
+  // Listen to typing status
   useEffect(() => {
     if (!chat.id) return;
     
@@ -124,17 +144,59 @@ export default function GroupChatWorkspace({
     return () => unsubscribe();
   }, [chat.id, chat.name]);
 
-  // Cleanup audio on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
       }
-      // Cleanup all voice message audio instances
       document.querySelectorAll('audio').forEach(audio => audio.remove());
     };
   }, []);
+
+  // Load more messages (infinite scroll)
+  const handleLoadMore = async () => {
+    if (isLoadingMore || !hasMoreMessages || messages.length === 0) return;
+    
+    setIsLoadingMore(true);
+    const oldestMessage = messages[0];
+    
+    try {
+      const olderMessages = await loadMoreMessages(chat.id, oldestMessage.timestamp);
+      
+      if (olderMessages.length === 0) {
+        setHasMoreMessages(false);
+      } else {
+        setMessages(prev => [...olderMessages, ...prev]);
+        setHasMoreMessages(olderMessages.length >= 20);
+      }
+    } catch (error) {
+      console.error('Error loading more messages:', error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  // Close popovers when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      if (showEmojiPicker && emojiPickerRef.current && !emojiPickerRef.current.contains(target)) {
+        const trigger = document.querySelector('[title="Add Emoji"]');
+        if (!trigger || !trigger.contains(target)) {
+          setShowEmojiPicker(false);
+        }
+      }
+      if (showAttachmentMenu && attachmentMenuRef.current && !attachmentMenuRef.current.contains(target)) {
+        setShowAttachmentMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showEmojiPicker, showAttachmentMenu]);
 
   const handleLocalImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -164,39 +226,41 @@ export default function GroupChatWorkspace({
     }, 1500);
   };
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() && !pendingImage && !audioBlob) return;
     
-    // If there's an audio recording, convert to base64 and send
-    if (audioBlob) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result && typeof event.target.result === 'string') {
-          // Send as audio message with a special format
-          onSendMessage(chat.id, inputText.trim() || '🎤 Voice message', event.target.result);
-          setAudioBlob(null);
-          setAudioUrl(null);
-          setRecordingDuration(0);
-          setShowRecordingInterface(false);
-          setIsRecording(false);
-          setIsPaused(false);
-          setInputText('');
-        }
-      };
-      reader.readAsDataURL(audioBlob);
-      return;
+    try {
+      if (audioBlob) {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          if (event.target?.result && typeof event.target.result === 'string') {
+            await onSendMessage(chat.id, inputText.trim() || '🎤 Voice message', event.target.result);
+            setAudioBlob(null);
+            setAudioUrl(null);
+            setRecordingDuration(0);
+            setShowRecordingInterface(false);
+            setIsRecording(false);
+            setIsPaused(false);
+            setInputText('');
+          }
+        };
+        reader.readAsDataURL(audioBlob);
+        return;
+      }
+      
+      await onSendMessage(chat.id, inputText.trim(), pendingImage || undefined);
+      setInputText('');
+      setPendingImage(null);
+      
+      // Clear typing status
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      setTypingStatus(chat.id, getCurrentUser()?.uid || '', false);
+    } catch (error) {
+      console.error('Error sending message:', error);
     }
-    
-    onSendMessage(chat.id, inputText.trim(), pendingImage || undefined);
-    setInputText('');
-    setPendingImage(null);
-    
-    // Clear typing status when message is sent
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-    }
-    setTypingStatus(chat.id, getCurrentUser()?.uid || '', false);
   };
 
   // ========== VOICE RECORDING FUNCTIONS ==========
@@ -220,16 +284,14 @@ export default function GroupChatWorkspace({
         setAudioUrl(audioUrl);
         setShowRecordingInterface(true);
         
-        // Stop all tracks
         stream.getTracks().forEach(track => track.stop());
       };
       
-      mediaRecorderRef.current.start(100); // Capture every 100ms
+      mediaRecorderRef.current.start(100);
       setIsRecording(true);
       setIsPaused(false);
       setRecordingDuration(0);
       
-      // Start timer
       recordingTimerRef.current = setInterval(() => {
         setRecordingDuration(prev => prev + 1);
       }, 1000);
@@ -332,9 +394,8 @@ export default function GroupChatWorkspace({
     setPlaybackProgress(0);
   };
 
-  // ========== VOICE MESSAGE PLAYBACK FUNCTIONS ==========
+  // ========== VOICE MESSAGE PLAYBACK ==========
   const toggleVoiceMessagePlayback = (messageId: string, audioData: string) => {
-    // If clicking the same message that's playing, pause it
     if (playingVoiceMessageId === messageId && audioRef.current) {
       audioRef.current.pause();
       setIsPlaying(false);
@@ -342,17 +403,14 @@ export default function GroupChatWorkspace({
       return;
     }
 
-    // Stop any currently playing audio
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
 
-    // Create new audio instance
     const audio = new Audio(audioData);
     audioRef.current = audio;
 
-    // Set up event listeners
     audio.onended = () => {
       setIsPlaying(false);
       setPlayingVoiceMessageId(null);
@@ -364,20 +422,12 @@ export default function GroupChatWorkspace({
         const progress = (audio.currentTime / audio.duration) * 100;
         setVoiceMessageProgress(prev => ({ ...prev, [messageId]: progress }));
         
-        // Store duration for display
         if (!voiceMessageDuration[messageId]) {
           setVoiceMessageDuration(prev => ({ ...prev, [messageId]: audio.duration }));
         }
       }
     };
 
-    audio.onloadedmetadata = () => {
-      if (audio.duration) {
-        setVoiceMessageDuration(prev => ({ ...prev, [messageId]: audio.duration }));
-      }
-    };
-
-    // Start playing
     audio.play().catch(error => {
       console.error('Error playing voice message:', error);
       setIsPlaying(false);
@@ -400,20 +450,6 @@ export default function GroupChatWorkspace({
     const secs = seconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
-
-  // ========== END VOICE RECORDING FUNCTIONS ==========
-
-  // Get other participants for display
-  const getParticipants = () => {
-    if (chat.type === 'direct') {
-      return [
-        { name: chat.name, avatar: chat.avatar, role: 'User', isOnline: true }
-      ];
-    }
-    return [];
-  };
-
-  const participants = getParticipants();
 
   return (
     <div id="chat-workspace" className="flex-1 h-full bg-[#f1f4f8] flex flex-col justify-between overflow-hidden relative">
@@ -455,10 +491,10 @@ export default function GroupChatWorkspace({
       </div>
 
       {/* Pinned Message Banner */}
-      {chat.messages && chat.messages.find(m => m.isPinned) && (() => {
-        const pinnedMessage = chat.messages.find(m => m.isPinned)!;
+      {messages.filter(m => m.isPinned).length > 0 && (() => {
+        const pinnedMessage = messages.find(m => m.isPinned)!;
         return (
-          <div className="bg-[#e4f8f7] border-b border-[#00c5bc]/20 px-6 py-2 flex items-center justify-between z-10 animate-fade-in shrink-0">
+          <div className="bg-[#e4f8f7] border-b border-[#00c5bc]/20 px-6 py-2 flex items-center justify-between z-10 shrink-0">
             <div className="flex items-center gap-2 min-w-0">
               <Pin className="w-3.5 h-3.5 text-[#00c5bc] shrink-0 rotate-45" />
               <span className="text-[9.5px] uppercase font-black text-[#00c5bc] tracking-wider shrink-0">Pinned:</span>
@@ -480,12 +516,44 @@ export default function GroupChatWorkspace({
       })()}
 
       {/* Main Content */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-4 scrollbar-thin">
-        
+      <div 
+        ref={messagesContainerRef}
+        className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-4 scrollbar-thin"
+      >
         {activeTab === 'messages' ? (
           <>
+            {/* Load More Messages Button */}
+            {hasMoreMessages && messages.length > 0 && (
+              <div className="flex justify-center">
+                <button
+                  onClick={handleLoadMore}
+                  disabled={isLoadingMore}
+                  className="text-[9px] font-bold text-[#00c5bc] bg-white/80 hover:bg-white px-4 py-1.5 rounded-full border border-[#00c5bc]/20 disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {isLoadingMore ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Loading...
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="w-3 h-3" />
+                      Load Earlier Messages
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
+            {/* Loading State */}
+            {isLoadingMessages && (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 text-[#00c5bc] animate-spin" />
+              </div>
+            )}
+
             {/* Archived Messages Toggle */}
-            {chat.messages && chat.messages.some(m => m.isArchived) && (
+            {messages.some(m => m.isArchived) && (
               <div className="mx-auto bg-amber-50/45 border border-amber-200/40 py-1.5 px-3.5 rounded-full text-[9px] font-bold text-amber-700 flex items-center gap-2.5 mb-2">
                 <Archive className="w-3.5 h-3.5 text-amber-600" />
                 <span>Some messages are archived</span>
@@ -508,8 +576,21 @@ export default function GroupChatWorkspace({
               </div>
             )}
 
+            {/* Empty State */}
+            {!isLoadingMessages && messages.length === 0 && (
+              <div className="flex items-center justify-center flex-1 py-12">
+                <div className="text-center">
+                  <div className="w-16 h-16 rounded-full bg-[#e4f8f7] flex items-center justify-center mx-auto mb-4">
+                    <Send className="w-8 h-8 text-[#00c5bc]" />
+                  </div>
+                  <p className="text-[12px] font-bold text-gray-600">No messages yet</p>
+                  <p className="text-[10px] text-gray-400 mt-1">Start the conversation!</p>
+                </div>
+              </div>
+            )}
+
             {/* Messages */}
-            {chat.messages?.map((msg) => {
+            {messages.map((msg) => {
               const isSelf = msg.isSelf;
               const isVoiceMessage = msg.image && msg.image.startsWith('data:audio');
               const isPlayingThisMessage = playingVoiceMessageId === msg.id;
@@ -582,7 +663,6 @@ export default function GroupChatWorkspace({
                       }`}>
                       
                       {isVoiceMessage ? (
-                        // Voice message playback UI
                         <div className="px-3 py-2 flex items-center gap-3 min-w-[160px] max-w-[280px]">
                           <button
                             onClick={(e) => {
@@ -606,16 +686,12 @@ export default function GroupChatWorkspace({
                                 className="h-full bg-[#00c5bc] rounded-full transition-all duration-300"
                                 style={{ 
                                   width: `${voiceMessageProgress[msg.id] || 0}%`,
-                                  animation: isPlayingThisMessage ? 'pulse 1.5s ease-in-out infinite' : 'none'
                                 }}
                               />
                             </div>
                             <div className="flex items-center justify-between mt-1">
                               <span className="text-[9px] text-gray-400">
-                                {isPlayingThisMessage 
-                                  ? formatDuration(voiceMessageDuration[msg.id] || 0)
-                                  : formatDuration(voiceMessageDuration[msg.id] || 0)
-                                }
+                                {formatDuration(voiceMessageDuration[msg.id] || 0)}
                               </span>
                               <span className="text-[8px] text-gray-300">🎤 Voice</span>
                             </div>
@@ -947,14 +1023,6 @@ export default function GroupChatWorkspace({
           </div>
         </form>
       )}
-
-      {/* Pulse Animation Keyframes */}
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
-      `}</style>
     </div>
   );
 }

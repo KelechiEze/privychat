@@ -18,7 +18,9 @@ import {
   arrayRemove,
   limit,
   increment,
-  Unsubscribe
+  Unsubscribe,
+  startAfter,
+  Timestamp
 } from 'firebase/firestore';
 
 // Helper to create consistent chat ID between two users
@@ -64,7 +66,6 @@ const DEFAULT_SHARED_FILES = [
 ];
 
 // ========== ONLINE STATUS FUNCTIONS ==========
-// Set user online status
 export const setUserOnline = async (userId: string, isOnline: boolean) => {
   try {
     const userRef = doc(db, 'users', userId);
@@ -78,7 +79,6 @@ export const setUserOnline = async (userId: string, isOnline: boolean) => {
   }
 };
 
-// Listen to user online status with real-time updates
 export const listenToUserStatus = (userId: string, callback: (isOnline: boolean, lastSeen: Date) => void): Unsubscribe => {
   const userRef = doc(db, 'users', userId);
   return onSnapshot(userRef, (doc) => {
@@ -93,7 +93,6 @@ export const listenToUserStatus = (userId: string, callback: (isOnline: boolean,
   });
 };
 
-// Get user status text
 export const getUserStatusText = (isOnline: boolean, lastSeen: Date): string => {
   if (isOnline) return 'Online';
   
@@ -109,7 +108,6 @@ export const getUserStatusText = (isOnline: boolean, lastSeen: Date): string => 
   return `Last seen ${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
 };
 
-// Get online status of a user (single fetch)
 export const getUserOnlineStatus = async (userId: string): Promise<{ isOnline: boolean; lastSeen: Date }> => {
   try {
     const userRef = doc(db, 'users', userId);
@@ -130,7 +128,6 @@ export const getUserOnlineStatus = async (userId: string): Promise<{ isOnline: b
 // ========== END ONLINE STATUS FUNCTIONS ==========
 
 // ========== TYPING INDICATORS ==========
-// Set typing status
 export const setTypingStatus = async (chatId: string, userId: string, isTyping: boolean) => {
   try {
     const typingRef = doc(db, 'typingIndicators', chatId);
@@ -143,13 +140,11 @@ export const setTypingStatus = async (chatId: string, userId: string, isTyping: 
   }
 };
 
-// Listen to typing status
 export const listenToTypingStatus = (chatId: string, currentUserId: string, callback: (isTyping: boolean, typingUserId: string) => void) => {
   const typingRef = doc(db, 'typingIndicators', chatId);
   return onSnapshot(typingRef, (doc) => {
     if (doc.exists()) {
       const data = doc.data();
-      // Find if someone else is typing
       for (const [userId, isTyping] of Object.entries(data)) {
         if (userId !== currentUserId && userId !== 'lastUpdated' && isTyping === true) {
           callback(true, userId);
@@ -165,7 +160,6 @@ export const listenToTypingStatus = (chatId: string, currentUserId: string, call
 // ========== END TYPING INDICATORS ==========
 
 // ========== PROFILE UPDATE FUNCTIONS ==========
-// Update user profile (avatar, display name, etc.)
 export const updateUserProfile = async (userId: string, updates: { avatar?: string; displayName?: string }) => {
   try {
     const userRef = doc(db, 'users', userId);
@@ -181,7 +175,6 @@ export const updateUserProfile = async (userId: string, updates: { avatar?: stri
   }
 };
 
-// Get current user's profile from Firestore
 export const getCurrentUserProfile = async () => {
   const currentUser = getCurrentUser();
   if (!currentUser) return null;
@@ -204,8 +197,6 @@ export const getCurrentUserProfile = async () => {
 export const searchUsers = async (searchTerm: string) => {
   const currentUser = getCurrentUser();
   if (!currentUser) return [];
-  
-  console.log("🔍 Searching for:", searchTerm);
   
   try {
     const usersRef = collection(db, 'users');
@@ -233,7 +224,6 @@ export const searchUsers = async (searchTerm: string) => {
       }
     });
     
-    console.log("Found users:", users);
     return users;
   } catch (error) {
     console.error("Error searching users:", error);
@@ -256,12 +246,10 @@ export const getUserProfile = async (userId: string) => {
   }
 };
 
-// Create or get existing chat - UPDATED with better error handling
+// Create or get existing chat
 export const createOrGetChat = async (otherUserId: string) => {
   const currentUser = getCurrentUser();
   if (!currentUser) throw new Error('Not authenticated');
-  
-  console.log("💬 Creating/getting chat with user:", otherUserId);
   
   const chatId = getChatId(currentUser.uid, otherUserId);
   const chatRef = doc(db, 'chats', chatId);
@@ -279,9 +267,6 @@ export const createOrGetChat = async (otherUserId: string) => {
     const currentUserAvatar = currentUserProfile?.avatar || '';
     
     if (!chatDoc.exists()) {
-      console.log("📝 Creating new chat document...");
-      
-      // Create chat document with proper participants array
       await setDoc(chatRef, {
         participants: [currentUser.uid, otherUserId],
         participantsInfo: {
@@ -297,14 +282,15 @@ export const createOrGetChat = async (otherUserId: string) => {
         createdAt: serverTimestamp(),
         lastMessage: '',
         lastMessageTime: serverTimestamp(),
-        lastUpdated: serverTimestamp()
+        lastUpdated: serverTimestamp(),
+        unreadCount: {
+          [currentUser.uid]: 0,
+          [otherUserId]: 0
+        }
       });
     }
     
-    // ALWAYS update/ensure both users have the chat in their userChats
-    console.log("📝 Ensuring both users have chat in their lists...");
-    
-    // Add to current user's chat list
+    // Update both users' chat lists
     const userChatRef = doc(db, 'userChats', currentUser.uid, 'chats', chatId);
     await setDoc(userChatRef, {
       chatId: chatId,
@@ -314,7 +300,6 @@ export const createOrGetChat = async (otherUserId: string) => {
       lastUpdated: serverTimestamp()
     });
     
-    // Add to other user's chat list
     const otherUserChatRef = doc(db, 'userChats', otherUserId, 'chats', chatId);
     await setDoc(otherUserChatRef, {
       chatId: chatId,
@@ -324,7 +309,6 @@ export const createOrGetChat = async (otherUserId: string) => {
       lastUpdated: serverTimestamp()
     });
     
-    console.log("✅ Chat setup complete for both users!");
     return chatId;
   } catch (error) {
     console.error("Error in createOrGetChat:", error);
@@ -332,15 +316,14 @@ export const createOrGetChat = async (otherUserId: string) => {
   }
 };
 
-// Send a message with read tracking - UPDATED with proper error handling
+// Send a message
 export const sendMessage = async (chatId: string, text: string, imageUrl?: string) => {
   const currentUser = getCurrentUser();
   if (!currentUser) throw new Error('Not authenticated');
   
-  console.log("📤 Sending message to chat:", chatId);
-  
   try {
     const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const chatRef = doc(db, 'chats', chatId);
     
     const messageData: any = {
       text: text,
@@ -360,15 +343,33 @@ export const sendMessage = async (chatId: string, text: string, imageUrl?: strin
     
     const messageDoc = await addDoc(messagesRef, messageData);
     
-    // Update last message in chat
-    const chatRef = doc(db, 'chats', chatId);
-    await updateDoc(chatRef, {
-      lastMessage: text,
+    // Update chat metadata
+    const chatDoc = await getDoc(chatRef);
+    const chatData = chatDoc.data();
+    const otherUserId = chatData?.participants?.find((id: string) => id !== currentUser.uid);
+    
+    const updateData: any = {
+      lastMessage: text || (imageUrl ? '📷 Image' : ''),
       lastMessageTime: serverTimestamp(),
       lastUpdated: serverTimestamp()
-    });
+    };
     
-    console.log("✅ Message sent successfully!");
+    // Increment unread count for the other user
+    if (otherUserId) {
+      updateData[`unreadCount.${otherUserId}`] = increment(1);
+    }
+    
+    await updateDoc(chatRef, updateData);
+    
+    // Update userChats for both users
+    const currentUserChatRef = doc(db, 'userChats', currentUser.uid, 'chats', chatId);
+    const otherUserChatRef = doc(db, 'userChats', otherUserId, 'chats', chatId);
+    
+    await Promise.all([
+      updateDoc(currentUserChatRef, { lastUpdated: serverTimestamp() }),
+      updateDoc(otherUserChatRef, { lastUpdated: serverTimestamp() })
+    ]);
+    
     return messageDoc.id;
   } catch (error) {
     console.error("Error sending message:", error);
@@ -376,7 +377,7 @@ export const sendMessage = async (chatId: string, text: string, imageUrl?: strin
   }
 };
 
-// Mark message as read - UPDATED with error handling
+// Mark message as read
 export const markMessageAsRead = async (chatId: string, messageId: string) => {
   const currentUser = getCurrentUser();
   if (!currentUser) return;
@@ -387,7 +388,6 @@ export const markMessageAsRead = async (chatId: string, messageId: string) => {
     
     if (messageDoc.exists()) {
       const messageData = messageDoc.data();
-      // Only mark as read if not already read by this user
       if (!messageData.readBy?.includes(currentUser.uid)) {
         await updateDoc(messageRef, {
           read: true,
@@ -395,38 +395,36 @@ export const markMessageAsRead = async (chatId: string, messageId: string) => {
           readBy: arrayUnion(currentUser.uid),
           receiptStatus: 'read'
         });
-        console.log("✓ Message marked as read:", messageId);
       }
     }
   } catch (error) {
     console.error("Error marking message as read:", error);
-    // Don't throw - this is non-critical
   }
 };
 
-// Mark all messages in chat as read - UPDATED with better error handling
+// Mark all messages in chat as read
 export const markAllMessagesAsRead = async (chatId: string) => {
   const currentUser = getCurrentUser();
-  if (!currentUser) {
-    console.log("⚠️ No user logged in, cannot mark messages as read");
-    return;
-  }
+  if (!currentUser) return;
   
   try {
-    console.log(`📖 Marking all messages as read for chat: ${chatId} by user: ${currentUser.uid}`);
-    
     const messagesRef = collection(db, 'chats', chatId, 'messages');
-    // Get all messages that don't have current user in readBy
-    const allMessagesRef = collection(db, 'chats', chatId, 'messages');
-    const allMessages = await getDocs(allMessagesRef);
+    const chatRef = doc(db, 'chats', chatId);
     
+    // Get unread messages (limit to last 100 for efficiency)
+    const unreadQuery = query(
+      messagesRef,
+      orderBy('timestamp', 'desc'),
+      limit(100)
+    );
+    
+    const snapshot = await getDocs(unreadQuery);
     const batch = writeBatch(db);
     let count = 0;
     
-    allMessages.forEach((doc) => {
+    snapshot.docs.forEach((doc) => {
       const data = doc.data();
-      // Only mark if current user hasn't read it
-      if (!data.readBy?.includes(currentUser.uid)) {
+      if (!data.readBy?.includes(currentUser.uid) && data.senderId !== currentUser.uid) {
         batch.update(doc.ref, {
           read: true,
           readAt: serverTimestamp(),
@@ -439,42 +437,40 @@ export const markAllMessagesAsRead = async (chatId: string) => {
     
     if (count > 0) {
       await batch.commit();
-      console.log(`✅ Marked ${count} messages as read for user ${currentUser.uid}`);
-    } else {
-      console.log("ℹ️ No new messages to mark as read");
     }
     
-    // Also update the chat's unread count for this user
-    try {
-      const chatRef = doc(db, 'chats', chatId);
-      await updateDoc(chatRef, {
-        [`unreadCount.${currentUser.uid}`]: 0
-      });
-    } catch (error) {
-      console.warn("Could not update unread count:", error);
-    }
+    // Reset unread count
+    await updateDoc(chatRef, {
+      [`unreadCount.${currentUser.uid}`]: 0
+    });
     
+    console.log(`✅ Marked ${count} messages as read`);
   } catch (error) {
     console.error("Error marking messages as read:", error);
-    // Don't throw - this is non-critical for the user experience
   }
 };
 
-// Listen to messages in real-time with read status - UPDATED with better error handling
-export const listenToMessages = (chatId: string, callback: (messages: any[]) => void) => {
-  console.log("🎧 Listening to messages for chat:", chatId);
+// ========== OPTIMIZED MESSAGE LISTENING WITH PAGINATION ==========
+export const listenToMessagesPaginated = (
+  chatId: string,
+  callback: (messages: any[]) => void,
+  pageSize: number = 30
+): Unsubscribe => {
+  const currentUser = getCurrentUser();
   
-  try {
-    const messagesRef = collection(db, 'chats', chatId, 'messages');
-    const q = query(messagesRef, orderBy('timestamp', 'asc'));
-    
-    return onSnapshot(q, (snapshot) => {
-      const messages = snapshot.docs.map(doc => {
+  const messagesRef = collection(db, 'chats', chatId, 'messages');
+  const q = query(
+    messagesRef,
+    orderBy('timestamp', 'desc'),
+    limit(pageSize)
+  );
+  
+  return onSnapshot(q, (snapshot) => {
+    const messages = snapshot.docs
+      .map(doc => {
         const data = doc.data();
         const timestamp = data.timestamp?.toDate?.() || new Date();
-        const currentUser = getCurrentUser();
         
-        // Determine if message is read by the other user
         let receiptStatus = 'sent';
         if (data.read === true) {
           receiptStatus = 'read';
@@ -492,55 +488,69 @@ export const listenToMessages = (chatId: string, callback: (messages: any[]) => 
           isRead: data.read || false,
           readBy: data.readBy || []
         };
-      });
-      console.log(`📨 Received ${messages.length} messages for chat ${chatId}`);
-      callback(messages);
-    }, (error) => {
-      console.error('Error in message listener:', error);
-      callback([]); // Return empty array on error
-    });
-  } catch (error) {
-    console.error('Error setting up message listener:', error);
+      })
+      .reverse(); // Show oldest first
+    
+    callback(messages);
+  }, (error) => {
+    console.error('Error listening to messages:', error);
     callback([]);
-    return () => {}; // Return empty cleanup function
-  }
+  });
 };
 
-// Get all chats for current user with REAL-TIME ONLINE STATUS UPDATES
-export const listenToUserChats = (callback: (chats: any[]) => void) => {
+// Load more messages for infinite scroll
+export const loadMoreMessages = async (
+  chatId: string,
+  oldestMessageTimestamp: Date,
+  pageSize: number = 20
+): Promise<any[]> => {
+  const currentUser = getCurrentUser();
+  
+  const messagesRef = collection(db, 'chats', chatId, 'messages');
+  const q = query(
+    messagesRef,
+    orderBy('timestamp', 'desc'),
+    where('timestamp', '<', Timestamp.fromDate(oldestMessageTimestamp)),
+    limit(pageSize)
+  );
+  
+  const snapshot = await getDocs(q);
+  
+  return snapshot.docs
+    .map(doc => {
+      const data = doc.data();
+      const timestamp = data.timestamp?.toDate?.() || new Date();
+      
+      return {
+        id: doc.id,
+        ...data,
+        isSelf: data.senderId === currentUser?.uid,
+        time: timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        timestamp: timestamp,
+        isRead: data.read || false,
+        readBy: data.readBy || []
+      };
+    })
+    .reverse();
+};
+
+// ========== OPTIMIZED CHAT LIST LOADING ==========
+export const listenToUserChatsOptimized = (callback: (chats: any[]) => void) => {
   const currentUser = getCurrentUser();
   if (!currentUser) {
-    console.log("No current user, returning empty callback");
     callback([]);
     return () => {};
   }
   
-  console.log("🔄 Loading chats for user:", currentUser.uid);
-  
   const userChatsRef = collection(db, 'userChats', currentUser.uid, 'chats');
   const q = query(userChatsRef, orderBy('lastUpdated', 'desc'));
   
-  // Store cleanup functions for status listeners
   let statusUnsubscribes: (() => void)[] = [];
   let isMounted = true;
-  
-  // Helper to update chat statuses
-  const updateChatStatus = (chats: any[], userId: string, isOnline: boolean, lastSeen: Date) => {
-    return chats.map(chat => {
-      // Find the other user in this chat
-      const otherUserId = chat.participants?.find((p: string) => p !== userId);
-      if (otherUserId === userId) {
-        const statusText = isOnline ? 'Online' : getUserStatusText(isOnline, lastSeen);
-        return { ...chat, statusText };
-      }
-      return chat;
-    });
-  };
   
   const unsubscribe = onSnapshot(q, async (snapshot) => {
     if (!isMounted) return;
     
-    console.log(`📋 Found ${snapshot.docs.length} chats for user`);
     const chats = [];
     const userIdsToWatch: string[] = [];
     
@@ -559,53 +569,28 @@ export const listenToUserChats = (callback: (chats: any[]) => void) => {
         try {
           otherUserProfile = await getUserProfile(otherUserId);
         } catch (error) {
-          console.warn(`Could not get profile for user ${otherUserId}:`, error);
+          console.warn(`Could not get profile for user ${otherUserId}`);
         }
         
-        // Get ALL messages for this chat
-        let messages = [];
+        // Get unread count from chat document
+        let unreadCount = 0;
+        let lastMessagePreview = '';
         try {
-          const messagesRef = collection(db, 'chats', chatId, 'messages');
-          const messagesQuery = query(messagesRef, orderBy('timestamp', 'asc'));
-          const messagesSnapshot = await getDocs(messagesQuery);
-          
-          messages = messagesSnapshot.docs.map(doc => {
-            const data = doc.data();
-            const timestamp = data.timestamp?.toDate?.() || new Date();
-            let receiptStatus = 'sent';
-            if (data.read === true) {
-              receiptStatus = 'read';
-            } else if (data.readBy?.length > 1) {
-              receiptStatus = 'delivered';
-            }
-            
-            return {
-              id: doc.id,
-              ...data,
-              isSelf: data.senderId === currentUser.uid,
-              time: timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              timestamp: timestamp,
-              receiptStatus: receiptStatus,
-              isRead: data.read || false,
-              readBy: data.readBy || []
-            };
-          });
+          const chatRef = doc(db, 'chats', chatId);
+          const fullChatDoc = await getDoc(chatRef);
+          if (fullChatDoc.exists()) {
+            const fullChatData = fullChatDoc.data();
+            unreadCount = fullChatData.unreadCount?.[currentUser.uid] || 0;
+            lastMessagePreview = fullChatData.lastMessage || '';
+          }
         } catch (error) {
-          console.warn(`Could not load messages for chat ${chatId}:`, error);
-          messages = [];
+          console.warn(`Could not get chat metadata for ${chatId}`);
         }
         
-        // Count unread messages
-        const unreadCount = messages.filter(msg => 
-          !msg.isSelf && !msg.readBy?.includes(currentUser.uid)
-        ).length;
-        
-        // Get online status - CRITICAL: Use the latest profile data
         const isOtherUserOnline = otherUserProfile?.isOnline || false;
         const lastSeen = otherUserProfile?.lastSeen?.toDate() || new Date();
         const statusText = isOtherUserOnline ? 'Online' : getUserStatusText(isOtherUserOnline, lastSeen);
         
-        // Create complete chat object with ALL messages
         chats.push({
           id: chatId,
           name: chatData.otherUserName || 'User',
@@ -616,7 +601,8 @@ export const listenToUserChats = (callback: (chats: any[]) => void) => {
           statusText: statusText,
           isTyping: false,
           typingUser: '',
-          messages: messages,
+          messages: [], // Load messages only when chat is opened
+          lastMessage: lastMessagePreview,
           unreadCount: unreadCount,
           membersCount: 2,
           filesCount: 0,
@@ -628,11 +614,9 @@ export const listenToUserChats = (callback: (chats: any[]) => void) => {
         });
       } catch (error) {
         console.error(`Error processing chat ${chatDoc.id}:`, error);
-        // Skip this chat and continue with others
       }
     }
     
-    console.log(`✅ Returning ${chats.length} chats with ${chats.reduce((acc, chat) => acc + chat.messages.length, 0)} total messages`);
     callback(chats);
     
     // Clean up previous status listeners
@@ -641,14 +625,14 @@ export const listenToUserChats = (callback: (chats: any[]) => void) => {
     });
     statusUnsubscribes = [];
     
-    // Set up REAL-TIME status listeners for each other user
+    // Set up real-time status listeners
     userIdsToWatch.forEach(userId => {
       if (userId !== currentUser.uid) {
         const unsub = listenToUserStatus(userId, (isOnline, lastSeen) => {
           if (!isMounted) return;
-          console.log(`🔄 Status update for user ${userId}: ${isOnline ? 'Online' : 'Offline'}`);
           
-          // Update the chat list with new status
+          // Re-fetch all chats with updated status
+          // This ensures the UI updates with new online status
           callback(chats.map(chat => {
             if (chat.participants?.includes(userId)) {
               const statusText = isOnline ? 'Online' : getUserStatusText(isOnline, lastSeen);
@@ -665,7 +649,6 @@ export const listenToUserChats = (callback: (chats: any[]) => void) => {
     callback([]);
   });
   
-  // Return cleanup function
   return () => {
     isMounted = false;
     unsubscribe();
@@ -675,7 +658,19 @@ export const listenToUserChats = (callback: (chats: any[]) => void) => {
   };
 };
 
-// Delete a message - UPDATED with error handling
+// ========== ORIGINAL LISTEN TO MESSAGES (FOR BACKWARD COMPATIBILITY) ==========
+export const listenToMessages = (chatId: string, callback: (messages: any[]) => void) => {
+  // Use the new paginated version by default
+  return listenToMessagesPaginated(chatId, callback);
+};
+
+// ========== ORIGINAL LISTEN TO USER CHATS (FOR BACKWARD COMPATIBILITY) ==========
+export const listenToUserChats = (callback: (chats: any[]) => void) => {
+  // Use the new optimized version
+  return listenToUserChatsOptimized(callback);
+};
+
+// Delete a message
 export const deleteMessage = async (chatId: string, messageId: string) => {
   try {
     const currentUser = getCurrentUser();
@@ -701,7 +696,7 @@ export const deleteMessage = async (chatId: string, messageId: string) => {
   }
 };
 
-// Update message properties - UPDATED with error handling
+// Update message properties
 export const updateMessage = async (chatId: string, messageId: string, updates: any) => {
   try {
     const currentUser = getCurrentUser();
@@ -727,5 +722,48 @@ export const updateMessage = async (chatId: string, messageId: string, updates: 
   } catch (error) {
     console.error("Error updating message:", error);
     throw error;
+  }
+};
+
+// Archive old messages (optional, for performance)
+export const archiveOldMessages = async (chatId: string, beforeDate: Date, batchSize: number = 500) => {
+  try {
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const q = query(
+      messagesRef,
+      where('timestamp', '<', Timestamp.fromDate(beforeDate)),
+      orderBy('timestamp', 'asc'),
+      limit(batchSize)
+    );
+    
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) return 0;
+    
+    const batch = writeBatch(db);
+    
+    snapshot.docs.forEach(doc => {
+      batch.delete(doc.ref);
+    });
+    
+    await batch.commit();
+    
+    console.log(`Archived ${snapshot.docs.length} old messages from chat ${chatId}`);
+    return snapshot.docs.length;
+  } catch (error) {
+    console.error("Error archiving messages:", error);
+    return 0;
+  }
+};
+
+// Get total message count for a chat
+export const getMessageCount = async (chatId: string): Promise<number> => {
+  try {
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const snapshot = await getDocs(messagesRef);
+    return snapshot.size;
+  } catch (error) {
+    console.error("Error getting message count:", error);
+    return 0;
   }
 };
